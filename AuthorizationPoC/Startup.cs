@@ -12,6 +12,8 @@ using AuthorizationPoC.Data;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using IdentityServer4;
+using IdentityServer4.EntityFramework.DbContexts;
 
 namespace AuthorizationPoC
 {
@@ -27,15 +29,50 @@ namespace AuthorizationPoC
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
+            var migrationAssembly = typeof(Startup).Assembly.GetName().Name;
+            var connectionString = Configuration.GetConnectionString("DefaultConnection");
+
             services
                 .AddDbContext<ApplicationDbContext>(options =>
-                    options.UseSqlServer(Configuration.GetConnectionString("DefaultConnection")));
+                    options.UseSqlServer(connectionString));
 
             services
                 .AddIdentity<IdentityUser, IdentityRole>(options => options.SignIn.RequireConfirmedAccount = true)
-                .AddEntityFrameworkStores<ApplicationDbContext>();
+                .AddRoles<IdentityRole>()
+                .AddEntityFrameworkStores<ApplicationDbContext>()
+                .AddDefaultTokenProviders();
 
-            services.AddRazorPages();
+            var builder = services.AddIdentityServer()
+                .AddTestUsers(TestUsers.Users)
+                .AddConfigurationStore(options =>
+                {
+                    options.ConfigureDbContext = b => b.UseSqlServer(connectionString,
+                        sql => sql.MigrationsAssembly(migrationAssembly));
+                })
+                .AddOperationalStore(options =>
+                {
+                    options.ConfigureDbContext = b => b.UseSqlServer(connectionString,
+                        sql => sql.MigrationsAssembly(migrationAssembly));
+                    options.EnableTokenCleanup = true;
+                    options.TokenCleanupInterval = 3600;
+                })
+                .AddAspNetIdentity<IdentityUser>();
+
+            // not recommended for production - you need to store your key material somewhere secure
+            builder.AddDeveloperSigningCredential();
+
+            services.AddAuthentication()
+                .AddGoogle("Google", options =>
+                {
+                    options.SignInScheme = IdentityServerConstants.ExternalCookieAuthenticationScheme;
+
+                    options.ClientId = "140382645454-g1f7tlgo58dfof9gb5bv3l6cqm1ga858.apps.googleusercontent.com";
+                    options.ClientSecret = "1uVdSuVzKgW5Lz76pb7knIPN";
+                });
+
+            services.AddAuthorization();
+
+            services.AddControllersWithViews();
         }
 
         // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -53,18 +90,29 @@ namespace AuthorizationPoC
                 app.UseHsts();
             }
 
+            EnsureMigrationApplied(app);
+
             app.UseHttpsRedirection();
             app.UseStaticFiles();
 
             app.UseRouting();
 
-            app.UseAuthentication();
+            app.UseIdentityServer();
             app.UseAuthorization();
 
             app.UseEndpoints(endpoints =>
             {
-                endpoints.MapRazorPages();
+                endpoints.MapDefaultControllerRoute();
             });
+        }
+
+        public void EnsureMigrationApplied(IApplicationBuilder app)
+        {
+            using var scope = app.ApplicationServices.GetService<IServiceScopeFactory>().CreateScope();
+
+            scope.ServiceProvider.GetService<ApplicationDbContext>().Database.Migrate();
+            scope.ServiceProvider.GetRequiredService<PersistedGrantDbContext>().Database.Migrate();
+            scope.ServiceProvider.GetRequiredService<ConfigurationDbContext>().Database.Migrate();
         }
     }
 }
