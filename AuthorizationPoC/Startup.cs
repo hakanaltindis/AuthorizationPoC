@@ -1,19 +1,19 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Identity;
-using Microsoft.AspNetCore.Identity.UI;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.HttpsPolicy;
-using Microsoft.EntityFrameworkCore;
 using AuthorizationPoC.Data;
+using IdentityModel;
+using IdentityServer4;
+using IdentityServer4.EntityFramework.DbContexts;
+using IdentityServer4.EntityFramework.Mappers;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using IdentityServer4;
-using IdentityServer4.EntityFramework.DbContexts;
+using Serilog;
+using System;
+using System.Linq;
+using System.Security.Claims;
 
 namespace AuthorizationPoC
 {
@@ -42,8 +42,14 @@ namespace AuthorizationPoC
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddDefaultTokenProviders();
 
-            var builder = services.AddIdentityServer()
-                .AddTestUsers(TestUsers.Users)
+            var builder = services
+                .AddIdentityServer(options =>
+                {
+                    options.Events.RaiseErrorEvents = true;
+                    options.Events.RaiseInformationEvents = true;
+                    options.Events.RaiseFailureEvents = true;
+                    options.Events.RaiseSuccessEvents = true;
+                })
                 .AddConfigurationStore(options =>
                 {
                     options.ConfigureDbContext = b => b.UseSqlServer(connectionString,
@@ -106,13 +112,119 @@ namespace AuthorizationPoC
             });
         }
 
-        public void EnsureMigrationApplied(IApplicationBuilder app)
+        private void EnsureMigrationApplied(IApplicationBuilder app)
         {
             using var scope = app.ApplicationServices.GetService<IServiceScopeFactory>().CreateScope();
 
-            scope.ServiceProvider.GetService<ApplicationDbContext>().Database.Migrate();
+            var mainDbContext = scope.ServiceProvider.GetService<ApplicationDbContext>();
+
+            mainDbContext.Database.Migrate();
             scope.ServiceProvider.GetRequiredService<PersistedGrantDbContext>().Database.Migrate();
             scope.ServiceProvider.GetRequiredService<ConfigurationDbContext>().Database.Migrate();
+
+            AddTestUser(scope);
+            AddTestIdentityModels(scope);
+        }
+
+        private void AddTestUser(IServiceScope scope)
+        {
+            var userMgr = scope.ServiceProvider.GetRequiredService<UserManager<IdentityUser>>();
+
+            var alice = userMgr.FindByNameAsync("alice").Result;
+            if (alice != null)
+                Log.Debug("alice already exists");
+            else
+            {
+                alice = new IdentityUser
+                {
+                    UserName = "alice"
+                };
+                var result = userMgr.CreateAsync(alice, "Pass123$").Result;
+                if (!result.Succeeded)
+                {
+                    throw new Exception(result.Errors.First().Description);
+                }
+
+                result = userMgr.AddClaimsAsync(alice, new Claim[]{
+                            new Claim(JwtClaimTypes.Name, "Alice Smith"),
+                            new Claim(JwtClaimTypes.GivenName, "Alice"),
+                            new Claim(JwtClaimTypes.FamilyName, "Smith"),
+                            new Claim(JwtClaimTypes.Email, "AliceSmith@email.com"),
+                            new Claim(JwtClaimTypes.EmailVerified, "true", ClaimValueTypes.Boolean),
+                            new Claim(JwtClaimTypes.WebSite, "http://alice.com"),
+                            new Claim(JwtClaimTypes.Address, @"{ 'street_address': 'One Hacker Way', 'locality': 'Heidelberg', 'postal_code': 69118, 'country': 'Germany' }", IdentityServer4.IdentityServerConstants.ClaimValueTypes.Json)
+                    }).Result;
+                if (!result.Succeeded)
+                {
+                    throw new Exception(result.Errors.First().Description);
+                }
+                Log.Debug("alice created");
+            }
+
+            var bob = userMgr.FindByNameAsync("bob").Result;
+            if (bob != null)
+                Log.Debug("bob already exists");
+            else
+            {
+                bob = new IdentityUser
+                {
+                    UserName = "bob"
+                };
+                var result = userMgr.CreateAsync(bob, "Pass123$").Result;
+                if (!result.Succeeded)
+                {
+                    throw new Exception(result.Errors.First().Description);
+                }
+
+                result = userMgr.AddClaimsAsync(bob, new Claim[]{
+                            new Claim(JwtClaimTypes.Id, "2", ClaimValueTypes.Integer),
+                            new Claim(JwtClaimTypes.Name, "Bob Smith"),
+                            new Claim(JwtClaimTypes.GivenName, "Bob"),
+                            new Claim(JwtClaimTypes.FamilyName, "Smith"),
+                            new Claim(JwtClaimTypes.Email, "BobSmith@email.com"),
+                            new Claim(JwtClaimTypes.EmailVerified, "true", ClaimValueTypes.Boolean),
+                            new Claim(JwtClaimTypes.WebSite, "http://bob.com"),
+                            new Claim(JwtClaimTypes.Address, @"{ 'street_address': 'One Hacker Way', 'locality': 'Heidelberg', 'postal_code': 69118, 'country': 'Germany' }", IdentityServer4.IdentityServerConstants.ClaimValueTypes.Json),
+                            new Claim("location", "somewhere")
+                    }).Result;
+                if (!result.Succeeded)
+                {
+                    throw new Exception(result.Errors.First().Description);
+                }
+                Log.Debug("bob created");
+            }
+        }
+
+        private void AddTestIdentityModels(IServiceScope scope)
+        {
+            var context = scope.ServiceProvider.GetRequiredService<ConfigurationDbContext>();
+            context.Database.Migrate();
+            if (!context.Clients.Any())
+            {
+                foreach (var client in Config.Clients)
+                {
+                    context.Clients.Add(client.ToEntity());
+                }
+                context.SaveChanges();
+            }
+
+            if (!context.IdentityResources.Any())
+            {
+                foreach (var resource in Config.Ids)
+                {
+                    context.IdentityResources.Add(resource.ToEntity());
+                }
+                context.SaveChanges();
+            }
+
+            if (!context.ApiResources.Any())
+            {
+                foreach (var resource in Config.Apis)
+                {
+                    context.ApiResources.Add(resource.ToEntity());
+                }
+                context.SaveChanges();
+            }
         }
     }
 }
