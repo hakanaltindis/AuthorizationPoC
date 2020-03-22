@@ -37,7 +37,7 @@ namespace AuthorizationPoC
                     options.UseSqlServer(connectionString));
 
             services
-                .AddIdentity<IdentityUser, IdentityRole>(options => options.SignIn.RequireConfirmedAccount = true)
+                .AddIdentity<IdentityUser, IdentityRole>(/*options => options.SignIn.RequireConfirmedAccount = true*/) // => TODO: HakanA: WTF is that???
                 .AddRoles<IdentityRole>()
                 .AddEntityFrameworkStores<ApplicationDbContext>()
                 .AddDefaultTokenProviders();
@@ -62,7 +62,8 @@ namespace AuthorizationPoC
                     options.EnableTokenCleanup = true;
                     options.TokenCleanupInterval = 3600;
                 })
-                .AddAspNetIdentity<IdentityUser>();
+                .AddAspNetIdentity<IdentityUser>()
+                .AddProfileService<IdentityProfileService>();
 
             // not recommended for production - you need to store your key material somewhere secure
             builder.AddDeveloperSigningCredential();
@@ -132,7 +133,9 @@ namespace AuthorizationPoC
 
             var alice = userMgr.FindByNameAsync("alice").Result;
             if (alice != null)
+            {
                 Log.Debug("alice already exists");
+            }
             else
             {
                 alice = new IdentityUser
@@ -160,6 +163,7 @@ namespace AuthorizationPoC
                 }
                 Log.Debug("alice created");
             }
+            CheckAndAddTenantIdClaim(userMgr, alice);
 
             var bob = userMgr.FindByNameAsync("bob").Result;
             if (bob != null)
@@ -193,6 +197,7 @@ namespace AuthorizationPoC
                 }
                 Log.Debug("bob created");
             }
+            CheckAndAddTenantIdClaim(userMgr, bob);
         }
 
         private void AddTestIdentityModels(IServiceScope scope)
@@ -224,6 +229,15 @@ namespace AuthorizationPoC
                     context.ApiResources.Add(resource.ToEntity());
                 }
                 context.SaveChanges();
+            }
+        }
+
+        private void CheckAndAddTenantIdClaim(UserManager<IdentityUser> userMgr, IdentityUser user)
+        {
+            var claims = userMgr.GetClaimsAsync(user).Result;
+            if (!claims.Select(i => i.Type).Contains("TenantId"))
+            {
+                userMgr.AddClaimAsync(user, new Claim("TenantId", Guid.NewGuid().ToString())).Wait();
             }
         }
     }
